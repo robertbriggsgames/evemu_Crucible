@@ -429,8 +429,11 @@ void DestinyManager::UpdateVelocity(bool isMoving) {
         float delta(1.0f);
         if (isMoving) {
             //  ... ship is moving and ...
-            if ((m_activeSpeedFraction == m_userSpeedFraction) and (!m_prevSpeed)) {
-                // ... nothing has changed.
+            // Float equality is unreliable; treat near-equal cruise as no-op.
+            // Previously ASF==USF with m_prevSpeed set fell through without
+            // setting accel/decel, then still reset m_moveTime — causing the
+            // "move checks are not set right" spam (GitHub #275).
+            if (std::fabs(m_activeSpeedFraction - m_userSpeedFraction) < 0.01f) {
                 return;
             }
 
@@ -440,7 +443,7 @@ void DestinyManager::UpdateVelocity(bool isMoving) {
                 m_accel = false;
                 m_decel = true;
                 delta = m_activeSpeedFraction - m_userSpeedFraction;
-            } else if (m_userSpeedFraction > m_activeSpeedFraction) {
+            } else {
                 // ... request is higher than current speed - begin accel
                 logType = 3;
                 m_accel = true;
@@ -853,10 +856,20 @@ void DestinyManager::MoveObject() {
             }
         } else if (m_tractored or m_tractorPause) {
             ;   // do nothing here.  this is to remove error reporting from next line.
+        } else if (m_userSpeedFraction > 0.01f) {
+            // Cruise / orbit / follow with accel flags cleared (common after
+            // BeginMovement + UpdateVelocity no-op). Keep steady commanded speed
+            // instead of error-spamming and drifting ASF (#275).
+            move = "at constant speed, going";
+            m_activeSpeedFraction = m_userSpeedFraction;
+            m_timeFraction = 1.0f;
         } else {
-            sLog.Error("Destiny::MoveObject()", "%s(%u) - move checks are not set right. Acc:%s, Dec:%s, Turn:%s, Tic:%u, Tractored:%s, TractorPause:%s", \
-                    mySE->GetName(), mySE->GetID(), (m_accel ? "True" : "False"), (m_decel ? "True" : "False"), (m_turning ? "True" : "False"), \
-                    m_turnTic, (m_tractored ? "True" : "False"), (m_tractorPause ? "True" : "False"));
+            // Expected stop path with unset flags — halt cleanly.
+            if (is_log_enabled(DESTINY__MOVE_TRACE))
+                _log(DESTINY__MOVE_TRACE, "Destiny::MoveObject() - %s(%u) unset move flags while stopping; Halting.", \
+                        mySE->GetName(), mySE->GetID());
+            Halt();
+            return;
         }
 
         speed = (m_maxShipSpeed * m_activeSpeedFraction);
@@ -1922,8 +1935,12 @@ void DestinyManager::BeginMovement() {
     }
 
     // reset turn and movement checks for possible velocity change.
+    // Do not clear m_accel/m_decel here — SetSpeedFraction/UpdateVelocity below
+    // own those flags. Clearing them left cruise NPCs in a flagless MoveObject
+    // window after m_moveTime resets (#275).
     m_turnTic = 0;
-    m_stop = m_accel = m_decel = m_turning = false;
+    m_stop = false;
+    m_turning = false;
 
     if (!mySE->IsNPCSE() or (mySE->IsNPCSE() and mySE->GetNPCSE()->GetAIMgr()->IsIdle()))
         m_stateStamp = sEntityList.GetStamp();
