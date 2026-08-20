@@ -167,6 +167,8 @@ public:
     void UnCloak();
 
     PyResult AttemptDockOperation();
+    bool AttemptJumpOperation(uint32 fromGate, uint32 toGate);
+    void TryCompletePendingAction();
     void Undock(GPoint dir);
     void SetUndockSpeed();
     void DockingAccepted();

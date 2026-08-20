@@ -35,6 +35,7 @@
 #include "log/logsys.h"
 #include "map/MapData.h"
 #include "math/Trig.h"
+#include "system/SystemDB.h"
 #include "npc/NPC.h"
 #include "npc/NPCAI.h"
 #include "packets/Missile.h"
@@ -49,6 +50,16 @@
 #include "system/SystemManager.h"
 #include <cstdlib>
 
+namespace {
+    constexpr double STARGATE_JUMP_RANGE = 5000.0;
+
+    double RangeToEntityPerimeter(const GPoint& pos, double selfRadius, SystemEntity* target) {
+        double range = pos.distance(target->GetPosition());
+        range -= selfRadius;
+        range -= target->GetRadius();
+        return range;
+    }
+}
 
 DestinyManager::DestinyManager(SystemEntity *self)
 : mySE(self),
@@ -144,6 +155,9 @@ void DestinyManager::Process() {
     }
 
     ProcessState();
+
+    if (mySE->HasPilot())
+        TryCompletePendingAction();
 
     if (sConfig.debug.UseProfiling)
         sProfiler.AddTime(Profile::destiny, GetTimeUSeconds() - profileStartTime);
@@ -1096,13 +1110,38 @@ void DestinyManager::Follow() {
     GVector heading(m_position, target_point);
     m_targetDistance = (uint32)(heading.length() - m_radius);
 
+    if (mySE->HasPilot())
+        TryCompletePendingAction();
+
     if (m_targetDistance < m_followDistance) {
+        bool apActionApproach = false;
         if (mySE->HasPilot())
             if (mySE->GetPilot()->IsAutoPilot()) {
-                SetSpeedFraction(0.1);
-                _log(AUTOPILOT__TRACE, "DestinyManager::Follow() - Target within FollowDistance.  SpeedFraction = 0.1.");
-                return;
+                SystemEntity* pTarget = m_targetEntity.second;
+                Client* pClient = mySE->GetPilot();
+                if (pTarget != nullptr and pTarget->IsStationSE()) {
+                    if (pClient->GetDockStationID() == 0)
+                        pClient->SetDockStationID(pTarget->GetID());
+                    if (RangeToEntityPerimeter(m_position, mySE->GetRadius(), pTarget) <= 2500.0)
+                        return;
+                    apActionApproach = true;
+                } else if (pTarget != nullptr and pTarget->IsGateSE()) {
+                    uint32 fromGate = pTarget->GetID();
+                    if (!pClient->HasPendingJump()) {
+                        uint32 toGate = SystemDB::GetStargateDestination(fromGate);
+                        if (toGate != 0)
+                            pClient->SetPendingJump(fromGate, toGate);
+                    }
+                    if (RangeToEntityPerimeter(m_position, mySE->GetRadius(), pTarget) <= STARGATE_JUMP_RANGE)
+                        return;
+                    apActionApproach = true;
+                } else {
+                    SetSpeedFraction(0.1);
+                    _log(AUTOPILOT__TRACE, "DestinyManager::Follow() - Target within FollowDistance.  SpeedFraction = 0.1.");
+                    return;
+                }
             }
+        if (!apActionApproach) {
     // this will allow following entities to keep their follow state, yet stop movement if within their follow distance.
     //  by keeping their follow state, once the distance is greater than their follow distance, they will begin movement again.
         if (m_tractored) {
@@ -1127,6 +1166,7 @@ void DestinyManager::Follow() {
             } else {
                 Stop();
             }
+        }
         }
     } else {
         if (m_tractored and m_tractorPause) {
@@ -1806,6 +1846,9 @@ void DestinyManager::WarpStop(double currentShipSpeed) {
     // forward while decelerating - meaning that the client and server are
     // briefly out of sync because the server thinks the ship is halted.
     Halt();
+
+    if (mySE->HasPilot())
+        TryCompletePendingAction();
 }
 
 //called whenever an entity is going away and can no longer be used as a target
@@ -2392,12 +2435,87 @@ PyResult DestinyManager::AttemptDockOperation() {
         AlignTo( station );   // Turn ship and move toward docking point - client will usually call Dock() automatically...sometimes
         if (mySE->HasPilot() and mySE->GetPilot()->CanThrow())
             throw UserError ("DockingApproach");
+        return PyStatic.NewNone();
     }
 
     pClient->SetStateTimer(Player::State::Dock, sConfig.world.StationDockDelay *1000); // default @ 4sec();
     pClient->SetAutoPilot(false);
 
     return new PyLong(GetFileTimeNow());
+}
+
+bool DestinyManager::AttemptJumpOperation(uint32 fromGate, uint32 toGate) {
+    Client *pClient = mySE->GetPilot();
+    if (pClient == nullptr)
+        return false;
+
+    SystemEntity *gate = mySE->SystemMgr()->GetSE(fromGate);
+    if (gate == nullptr) {
+        pClient->ClearPendingJump();
+        codelog(CLIENT__ERROR, "%s: Stargate %u not found.", pClient->GetName(), fromGate);
+        pClient->SendErrorMsg("Stargate Not Found, Jump Aborted.");
+        return false;
+    }
+
+    double rangeToGate = RangeToEntityPerimeter(m_position, mySE->GetRadius(), gate);
+
+    _log(DESTINY__TRACE, "Destiny::AttemptJumpOperation() rangeToGate is %.2fm", rangeToGate);
+    if (rangeToGate > STARGATE_JUMP_RANGE) {
+        pClient->ClearDockStationID();
+        pClient->SetPendingJump(fromGate, toGate);
+        AlignTo(gate);
+        sLog.Green("Destiny", "%s: approaching gate %u for jump to %u (range %.0fm).", pClient->GetName(), fromGate, toGate, rangeToGate);
+        return false;
+    }
+
+    pClient->ClearPendingJump();
+    pClient->ClearDockStationID();
+    sLog.Green("Destiny", "%s: initiating jump from gate %u to %u (range %.0fm).", pClient->GetName(), fromGate, toGate, rangeToGate);
+    pClient->StargateJump(fromGate, toGate);
+    pClient->SetAutoPilot(false);
+    return true;
+}
+
+void DestinyManager::TryCompletePendingAction() {
+    if (!mySE->HasPilot())
+        return;
+
+    Client *pClient = mySE->GetPilot();
+    if (!pClient->IsIdle() or pClient->IsStateTimerActive())
+        return;
+
+    if (pClient->HasPendingJump()) {
+        uint32 fromGate = pClient->GetPendingFromGate();
+        uint32 toGate = pClient->GetPendingToGate();
+        SystemEntity *gate = mySE->SystemMgr()->GetSE(fromGate);
+        if (gate != nullptr) {
+            double rangeToGate = RangeToEntityPerimeter(m_position, mySE->GetRadius(), gate);
+            if (rangeToGate <= STARGATE_JUMP_RANGE) {
+                sLog.Green("Destiny", "%s: completing pending jump from gate %u to %u (range %.0fm).", pClient->GetName(), fromGate, toGate, rangeToGate);
+                pClient->ClearPendingJump();
+                pClient->StargateJump(fromGate, toGate);
+                pClient->SetAutoPilot(false);
+                return;
+            }
+        }
+    }
+
+    uint32 stationID = pClient->GetDockStationID();
+    if (stationID != 0) {
+        SystemEntity *station = mySE->SystemMgr()->GetSE(stationID);
+        if (station != nullptr) {
+            const GPoint stationPos = station->GetPosition();
+            double rangeToStationPerimiter = m_position.distance(stationPos);
+            rangeToStationPerimiter -= mySE->GetRadius();
+            rangeToStationPerimiter -= station->GetRadius();
+            if (rangeToStationPerimiter <= 2500.0) {
+                sLog.Green("Destiny", "%s: completing pending dock to station %u (range %.0fm).", pClient->GetName(), stationID, rangeToStationPerimiter);
+                pClient->SetStateTimer(Player::State::Dock, sConfig.world.StationDockDelay *1000);
+                pClient->SetAutoPilot(false);
+                return;
+            }
+        }
+    }
 }
 
 void DestinyManager::DockingAccepted()

@@ -574,6 +574,14 @@ PyResult BeyonceBound::CmdWarpToStuff(PyCallArgs &call, PyString* type, PyRep* i
     call.client->SetInvul(false);
     call.client->SetUndock(false);
 
+    if (pSE != nullptr and pSE->IsStationSE() and distance == 0)
+        call.client->SetDockStationID(pSE->GetID());
+    if (pSE != nullptr and pSE->IsGateSE()) {
+        uint32 toGate = SystemDB::GetStargateDestination(pSE->GetID());
+        if (toGate != 0)
+            call.client->SetPendingJump(pSE->GetID(), toGate);
+    }
+
     distance += (call.client->GetShipSE()->GetRadius() * 2); // add ship diameter to distance
     pDestiny->WarpTo(warpToPoint, distance);
 
@@ -611,6 +619,13 @@ PyResult BeyonceBound::CmdWarpToStuffAutopilot(PyCallArgs &call, PyInt* destID) 
     call.client->SetUndock(false);
     // AP shit here.....
     call.client->SetAutoPilot(true);
+    if (pSE->IsStationSE())
+        call.client->SetDockStationID(pSE->GetID());
+    else if (pSE->IsGateSE()) {
+        uint32 toGate = SystemDB::GetStargateDestination(pSE->GetID());
+        if (toGate != 0)
+            call.client->SetPendingJump(pSE->GetID(), toGate);
+    }
     call.client->UpdateSessionInt("solarsystemid", pSystem->GetID());
     //call.client->UpdateSession();
     //call.client->SendSessionChange();
@@ -646,6 +661,8 @@ PyResult BeyonceBound::CmdStop(PyCallArgs &call) {
 
     call.client->SetUndock(false);
     call.client->SetAutoPilot(false);
+    call.client->ClearDockStationID();
+    call.client->ClearPendingJump();
 
     pDestiny->Stop();
 
@@ -731,7 +748,8 @@ PyResult BeyonceBound::CmdStargateJump(PyCallArgs &call, PyInt* fromStargateID, 
     }
 
     /** @todo  check distance from ship to gate */
-    call.client->StargateJump(fromStargateID->value(), toStargateID->value());
+    call.client->ClearDockStationID();
+    pDestiny->AttemptJumpOperation(fromStargateID->value(), toStargateID->value());
 
     /* return error msg from this call, if applicable, else nodeid and timestamp */
     // returns nodeID and timestamp

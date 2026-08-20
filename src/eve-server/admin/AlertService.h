@@ -37,9 +37,9 @@ public:
 
 protected:
     PyResult BeanCount(PyCallArgs &call, PyRep* ignored);
-    PyResult BeanDelivery(PyCallArgs &call, PyList* beans);
-    PyResult GroupBeanDelivery(PyCallArgs &call, PyBuffer* compressedBeans);
-    PyResult SendClientStackTraceAlert(PyCallArgs &call, PyTuple* stackId, PyString* stackTrace, PyString* mode, PyRep* nextErrorKeyHash);
+    PyResult BeanDelivery(PyCallArgs &call);
+    PyResult GroupBeanDelivery(PyCallArgs &call);
+    PyResult SendClientStackTraceAlert(PyCallArgs &call);
 
     PyTraceLog* traceLogger;
 };

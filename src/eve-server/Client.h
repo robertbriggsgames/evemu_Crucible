@@ -224,8 +224,15 @@ public:
 
     //destiny stuff...
     void SetDockStationID(uint32 stationID)             { m_dockStationID = stationID; };
+    void ClearDockStationID()                           { m_dockStationID = 0; }
     void SetDockPoint(GPoint &pt)                       { m_dockPoint = pt; }
     uint32 GetDockStationID()                           { return m_dockStationID; };
+    void SetPendingJump(uint32 fromGate, uint32 toGate) { m_dockStationID = 0; m_pendingFromGate = fromGate; m_pendingToGate = toGate; }
+    void ClearPendingJump()                             { m_pendingFromGate = 0; m_pendingToGate = 0; }
+    bool HasPendingJump()                               { return m_pendingFromGate != 0; }
+    uint32 GetPendingFromGate()                         { return m_pendingFromGate; }
+    uint32 GetPendingToGate()                           { return m_pendingToGate; }
+    bool IsStateTimerActive()                           { return m_stateTimer.Enabled(); }
     GPoint GetDockPoint()                               { return m_dockPoint; }
     bool InPod()                                        { return (m_ship->groupID() == EVEDB::invGroups::Capsule); }
     bool IsInSpace()                                    { return sDataMgr.IsSolarSystem(m_locationID); }
@@ -383,10 +390,11 @@ protected:
 
     uint32 m_fleet;
     uint32 m_shipId;
-    //uint32 m_toGate;
     uint32 m_locationID;
     uint32 m_moveSystemID;  // holder for jumping to 'systemID'.    timer based.
     uint32 m_dockStationID; // holder for docking to 'stationID'.  timer based.
+    uint32 m_pendingFromGate; // holder for approaching a stargate before jump
+    uint32 m_pendingToGate;
 
     Timer m_stateTimer;      // state timer to consolidate timers
     Timer m_pingTimer;

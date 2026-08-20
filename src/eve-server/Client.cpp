@@ -118,11 +118,12 @@ Client::Client(EVEServiceManager& services, EVETCPConnection** con)
     m_validSession = false;
     m_sessionChangeActive = false;
 
-    //m_toGate = 0;
     m_locationID = 0;
     m_moveSystemID = 0;
     m_skillTimer = 0;
     m_dockStationID = 0;
+    m_pendingFromGate = 0;
+    m_pendingToGate = 0;
 
     m_lpMap.clear();
     m_channels.clear();
@@ -419,7 +420,9 @@ void Client::ProcessClient() {
             _log(CLIENT__TIMER, "ProcessClient():  SetInvul to false for %s(%u)", m_char->name(), m_char->itemID());
             m_invulTimer.Disable();
             m_invul = false;
-            m_undock = false;
+            // Do not abort an in-progress undock when a stale invulnerability timer expires.
+            if (m_clientState != Player::State::Undock)
+                m_undock = false;
         }
 
     if (m_scanTimer.Enabled())
@@ -884,6 +887,11 @@ void Client::SetBallPark() {
         SetBallParkTimer(Player::Timer::Default);    // set timer 1s to wait for beyonce
         return;
     }
+    if (m_undock and !m_setStateSent and !m_beyonce) {
+        m_bubbleWait = true;
+        SetBallParkTimer(Player::Timer::Default);
+        return;
+    }
     if (!m_setStateSent and m_beyonce) {  // MUST have beyonce before sending state data.
         pShipSE->DestinyMgr()->SendSetState();
         m_ballparkTimer.Disable();
@@ -904,8 +912,11 @@ void Client::SetBallPark() {
             m_clientState = Player::State::Idle;
         }
     }
-    if (m_undock)
+    if (m_undock) {
         pShipSE->DestinyMgr()->SetSpeedFraction();
+        if (m_setStateSent)
+            m_undock = false;
+    }
 }
 
 void Client::CheckBallparkTimer() {
@@ -968,6 +979,7 @@ void Client::DockToStation() {
 
     SetSessionTimer();
     m_ship->SetDocked();
+    ClearDockStationID();
 }
 
 void Client::UndockFromStation() {
@@ -975,7 +987,6 @@ void Client::UndockFromStation() {
         this->services().Lookup <TradeService>("trademgr")->CancelTrade(this);
     }
 
-    m_invul = true;
     m_undock = true;
     //set position and direction of docking ramp for later use
     m_dockPoint = m_stationData.dockPosition;
@@ -991,6 +1002,11 @@ void Client::UndockFromStation() {
      *  ***** 9sec from hitting undock to space view on live. *****
      */
     MoveToLocation(m_systemData.systemID, m_dockPoint);
+    // Clear expired timers left over from login/jump so undock timers can start.
+    if (m_invulTimer.Enabled() and m_invulTimer.GetRemainingTime() == 0)
+        m_invulTimer.Disable();
+    if (m_stateTimer.Enabled() and m_stateTimer.GetRemainingTime() == 0)
+        m_stateTimer.Disable();
     SetInvulTimer(Player::Timer::UndockInvul);
     SetStateTimer(Player::State::Undock, Player::Timer::Undock);
     SetSessionTimer();
@@ -1409,7 +1425,8 @@ PyRep *Client::GetAggressors() const {
 
 void Client::StargateJump(uint32 fromGate, uint32 toGate) {
     if ((m_clientState != Player::State::Idle) or m_stateTimer.Enabled()) {
-        sLog.Error("Client","%s: StargateJump called when a move is already pending. Ignoring.", m_char->name());
+        sLog.Error("Client","%s: StargateJump(%u->%u) ignored - state %s, timer %s.", m_char->name(), fromGate, toGate, \
+                GetStateName(m_clientState).c_str(), m_stateTimer.Enabled() ? "active" : "inactive");
         /** @todo  send error to client here */
         return;
     }
@@ -1449,6 +1466,7 @@ void Client::StargateJump(uint32 fromGate, uint32 toGate) {
 */
     //delay the move 4sec so they can see the JumpOut animation
     SetStateTimer(Player::State::Jump, Player::Timer::Jumping);
+    sLog.Green("Client", "%s: jump timer started %u -> %u (system %u).", m_char->name(), fromGate, toGate, m_moveSystemID);
 }
 
 void Client::CynoJump(InventoryItemRef beacon) {
@@ -1565,9 +1583,13 @@ void Client::SetBallParkTimer(uint32 time/*Player::Timer::Default*/)
     }
 
     if (m_ballparkTimer.Enabled()) {
-        _log(CLIENT__ERROR, "%s: Ballpark Timer called but timer already enabled with %ums remaining.", m_char->name(), m_ballparkTimer.GetRemainingTime());
-        EvE::traceStack();
-        return;
+        if (m_ballparkTimer.GetRemainingTime() == 0) {
+            m_ballparkTimer.Disable();
+        } else {
+            _log(CLIENT__ERROR, "%s: Ballpark Timer called but timer already enabled with %ums remaining.", m_char->name(), m_ballparkTimer.GetRemainingTime());
+            EvE::traceStack();
+            return;
+        }
     }
 
     _log(CLIENT__TIMER, "%s: Ballpark Timer set at %ums.  current state time is %ums", m_char->name(), time, m_ballparkTimer.GetCurrentTime());
@@ -1630,9 +1652,13 @@ void Client::SetInvulTimer(uint32 time/*Player::Timer::Default*/)
     }
 
     if (m_invulTimer.Enabled()) {
-        _log(CLIENT__ERROR, "%s: Invul Timer called but timer already enabled with %ums remaining.", m_char->name(), m_invulTimer.GetRemainingTime());
-        EvE::traceStack();
-        return;
+        if (m_invulTimer.GetRemainingTime() == 0) {
+            m_invulTimer.Disable();
+        } else {
+            _log(CLIENT__ERROR, "%s: Invul Timer called but timer already enabled with %ums remaining.", m_char->name(), m_invulTimer.GetRemainingTime());
+            EvE::traceStack();
+            return;
+        }
     }
 
     _log(CLIENT__TIMER, "%s: Invul Timer set at %ums.   current state time is %ums", m_char->name(), time, m_invulTimer.GetCurrentTime());
@@ -1649,9 +1675,13 @@ void Client::SetStateTimer( int8 state, uint32 time/*Player::Timer::Default*/)
     }
 
     if (m_stateTimer.Enabled()) {
-        _log(CLIENT__ERROR, "%s: State Timer called but timer already enabled with %ums remaining.", m_char->name(), m_stateTimer.GetRemainingTime());
-        EvE::traceStack();
-        return;
+        if (m_stateTimer.GetRemainingTime() == 0) {
+            m_stateTimer.Disable();
+        } else {
+            _log(CLIENT__ERROR, "%s: State Timer called but timer already enabled with %ums remaining.", m_char->name(), m_stateTimer.GetRemainingTime());
+            EvE::traceStack();
+            return;
+        }
     }
 
     _log(CLIENT__TIMER, "%s: Client Timer set from %s to %s at %ums.  current state time: %u", m_char->name(), \
