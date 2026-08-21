@@ -8,3 +8,7 @@
 !cmake
 !dep
 !config.h.in
+!modules
+!modules/**
+modules/**/.git
+modules/**/.git/**
