@@ -29,6 +29,7 @@
 #include "../eve-common/EVEVersion.h"
 
 #include "EVEServerConfig.h"
+#include "ModuleHooks.h"
 #include "NetService.h"
 // data managers
 #include "StaticDataMgr.h"
@@ -886,6 +887,8 @@ int main( int argc, char* argv[] )
     ServiceDB::SetServerOnlineStatus(true);
     sLog.Green("       ServerInit", "EVEmu Server is Online.");
 
+    EvEmu_Modules_OnServerReady(&newSvcMgr);
+
     sLog.Cyan("           Server", "Started on %s", currentDateTime().c_str());
 
     /////////////////////////////////////////////////////////////////////////////////////
@@ -909,6 +912,7 @@ int main( int argc, char* argv[] )
             sEntityList.Add(new Client(newSvcMgr, &tcpc));
 
         sEntityList.Process();
+        EvEmu_Modules_OnTick();
 
         /*  process console commands, if any, and check for 'exit' command */
         m_run = sConsole.Process();
@@ -929,6 +933,7 @@ int main( int argc, char* argv[] )
      * @note  these are order-dependent...
      */
     sLog.Warning("   ServerShutdown", "Main loop has stopped." );
+    EvEmu_Modules_OnShutdown();
     sLog.Error("   ServerShutdown", "EVEmu Server is Offline." );
     if (!sConsole.IsDbError())
         ServiceDB::SetServerOnlineStatus(false);
@@ -1035,6 +1040,7 @@ static void CatchSignal( int sig_num )
 
 static void CleanUp() {
     sLog.Warning("   ServerShutdown", "Main loop has stopped." );
+    EvEmu_Modules_OnShutdown();
     sLog.Error("   ServerShutdown", "EVEmu Server is Offline." );
     if (!sConsole.IsDbError())
         ServiceDB::SetServerOnlineStatus(false);

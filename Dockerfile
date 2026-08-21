@@ -30,6 +30,7 @@ ADD config.h.in /src/
 ADD /cmake/ /src/cmake
 ADD /dep/ /src/dep
 ADD /src/ /src/src
+ADD /modules /src/modules
 ADD /utils/ /src/utils
 ADD /.git/ /src/.git
 

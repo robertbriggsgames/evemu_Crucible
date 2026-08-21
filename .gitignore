@@ -122,3 +122,8 @@ sql.tar.gz
 .idea
 CMakeSettings.json
 log.ini
+
+# Optional add-ons live here as separate clones (not part of this repo)
+modules/*
+!modules/.gitkeep
+
